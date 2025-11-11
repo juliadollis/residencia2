@@ -1,3 +1,4 @@
+#treinado em pt inferencia em pt
 import os
 import torch
 import torch.nn.functional as F
