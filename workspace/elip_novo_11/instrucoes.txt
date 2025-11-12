@@ -1,0 +1,149 @@
+export PYTHONPATH=/workspace/elip_novo_11:$PYTHONPATH
+export ELIP_CFG=/workspace/elip_novo_11/configs/elip_clip_prompt.yaml
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export TOKENIZERS_PARALLELISM=false
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+
+
+
+```bash
+# 1) Ver métricas BASELINE vs RERANK (garantir que o script mostre os dois)
+export PYTHONPATH=/workspace/elip_novo_11:$PYTHONPATH
+export ELIP_CFG=/workspace/elip_novo_11/configs/elip_clip_prompt.yaml
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export TOKENIZERS_PARALLELISM=false
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 2) Reranquear TODOS os candidatos (seguir o paper): k_base=k_eval=1000
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["k_base"]=1000
+y["k_eval"]=1000
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: k_base=k_eval=1000")
+PY
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 3) Treino um pouco mais longo (melhora recall): epochs=5
+sed -i 's/^epochs: .*/epochs: 5/' /workspace/elip_novo_11/configs/elip_clip_prompt.yaml
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 4) Sanidade/Overfit rápido (deveria aumentar bem o R@1 no val pequeno)
+#    Usa 2000 exemplos, 3 épocas, k_base=k_eval=1000
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["max_train_examples"]=2000
+y["hm_subset"]=2000
+y["epochs"]=3
+y["lr"]=5.0e-5
+y["batch_size"]=64
+y["k_base"]=1000
+y["k_eval"]=1000
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: overfit 2k exemplos / 3 épocas / k=1000")
+PY
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 5) Se memória apertar, reduzir batch e acumular gradiente (mesma efetiva=64)
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["batch_size"]=32
+y["grad_accum_steps"]=2
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: batch_size=32, grad_accum_steps=2")
+PY
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 6) Hard mining mais agressivo (pegar vizinhos mais próximos): topn=63 -> 127
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["hard_topn"]=127
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: hard_topn=127")
+PY
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 7) Treino completo (sem limites) — pesado mas melhora:
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["max_train_examples"]=None
+y["hm_subset"]=None
+y["epochs"]=5
+y["batch_size"]=64
+y["grad_accum_steps"]=1
+y["hard_topn"]=127
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: full train (5 épocas, k=1000, hard_topn=127)")
+PY
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 8) (Opcional) A/B com CLIP maior (geralmente melhora recall):
+#    Trocar para ViT-L/14-336px
+python - <<'PY'
+import yaml, re
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["model_name"]="openai/clip-vit-large-patch14-336"
+y["img_size"]=336
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: model=CLIP ViT-L/14-336, img_size=336")
+PY
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 9) (Opcional) Desligar hard mining para checar ganho do próprio ELIP-C
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["hard_mining"]=False
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: hard_mining=False")
+PY
+python -m elip_novo_11.training.train_prompted_clip
+python -m elip_novo_11.infer.infer_rerank_prompted_clip
+```
+
+```bash
+# 10) Restaurar hard mining ligado após o teste
+python - <<'PY'
+import yaml
+p="/workspace/elip_novo_11/configs/elip_clip_prompt.yaml"
+y=yaml.safe_load(open(p))
+y["hard_mining"]=True
+open(p,"w").write(yaml.safe_dump(y,sort_keys=False))
+print("OK: hard_mining=True")
+PY
+```
