@@ -3,110 +3,6 @@ source .venv/bin/activate
 unset HF_HUB_ENABLE_HF_TRANSFER || true
 export HF_HUB_ENABLE_HF_TRANSFER=0
 
-cat > config.json << 'JSON'
-{
-  "dataset_name": "turing552/WikiArt",
-  "dataset_split": "validation",
-  "image_column": "image",
-  "text_column": "text_caption",
-  "style_columns_try": ["style", "movement", "genre"],
-  "model_name": "openai/clip-vit-base-patch32",
-  "index_dir": "index",
-  "batch_size": 32,
-  "top_k": 20,
-  "retrieved_dir": "outputs/retrieved",
-  "results_jsonl": "outputs/retrieval.jsonl"
-}
-JSON
-
-cat > config_multi.json << 'JSON'
-{
-  "dataset_name": "turing552/WikiArt",
-  "dataset_split": "validation",
-  "image_column": "image",
-  "text_column": "text_caption",
-  "style_columns_try": ["style", "movement", "genre"],
-  "models": [
-    {"id": "openai/clip-vit-base-patch32", "name": "clip_base"},
-    {"id": "turing552/clip-wikiart-augmented-v1-10ep", "name": "clip_wikiart_ft"}
-  ],
-  "index_root": "index_multi",
-  "batch_size": 32,
-  "top_k": 20,
-  "outputs_root": "outputs_multi"
-}
-JSON
-
-mkdir -p src outputs outputs_multi
-
-cat > src/build_index.py << 'PY'
-import json, os
-from datasets import load_dataset
-import torch, numpy as np
-from transformers import CLIPModel, CLIPProcessor
-from PIL import Image
-from tqdm import tqdm
-
-def try_load_dataset(name, target_split):
-    candidates=[target_split,"validation","val","dev","valid","test","train"]
-    seen=set()
-    for s in candidates:
-        if s in seen: continue
-        seen.add(s)
-        try:
-            ds=load_dataset(name,split=s)
-            return ds,s
-        except Exception:
-            pass
-    raise RuntimeError("no available split found")
-
-def main():
-    cfg=json.load(open("config.json"))
-    dname=cfg["dataset_name"]
-    split=cfg["dataset_split"]
-    img_col=cfg["image_column"]
-    txt_col=cfg["text_column"]
-    style_candidates=cfg["style_columns_try"]
-    model_name=cfg["model_name"]
-    outdir=cfg["index_dir"]
-    bsz=int(cfg["batch_size"])
-    os.makedirs(outdir,exist_ok=True)
-    ds, used_split=try_load_dataset(dname, split)
-    style_col=None
-    for c in style_candidates:
-        if c in ds.column_names:
-            style_col=c
-            break
-    device="cuda" if torch.cuda.is_available() else "cpu"
-    model=CLIPModel.from_pretrained(model_name).to(device).eval()
-    proc=CLIPProcessor.from_pretrained(model_name)
-    feats, meta = [], []
-    for i in tqdm(range(0, len(ds), bsz)):
-        batch = ds.select(range(i, min(i+bsz, len(ds))))
-        imgs = [x[img_col] for x in batch]
-        imgs = [im if isinstance(im, Image.Image) else Image.open(im) for im in imgs]
-        with torch.no_grad():
-            enc = proc(images=imgs, return_tensors="pt", padding=True).to(device)
-            vf = model.get_image_features(**enc)
-            vf = torch.nn.functional.normalize(vf, dim=-1)
-        feats.append(vf.cpu().numpy())
-        for j in range(len(batch)):
-            row = batch[j]
-            meta.append({
-                "idx": i+j,
-                "caption": str(row.get(txt_col,"")),
-                "style": str(row.get(style_col,"") if style_col else "")
-            })
-    feats = np.concatenate(feats, axis=0)
-    np.save(os.path.join(outdir, "image_embeds.npy"), feats)
-    with open(os.path.join(outdir, "meta.jsonl"), "w", encoding="utf-8") as f:
-        for m in meta: f.write(json.dumps(m, ensure_ascii=False)+"\n")
-    with open(os.path.join(outdir, "index_info.json"), "w") as f:
-        json.dump({"dataset_name":dname,"requested_split":split,"used_split":used_split,"image_column":img_col,"text_column":txt_col,"style_column":style_col,"model_name":model_name,"size":len(meta)}, f)
-
-if __name__=="__main__": main()
-PY
-
 cat > src/query_retrieve.py << 'PY'
 import json, os, numpy as np, torch
 from datasets import load_dataset
@@ -132,7 +28,6 @@ def main():
     used_split=info["used_split"]
     img_col=info["image_column"]
     txt_col=info["text_column"]
-    style_col=info.get("style_column")
     model_name=info["model_name"]
     top_k=int(cfg["top_k"])
     feats=np.load(os.path.join(cfg["index_dir"],"image_embeds.npy"))
@@ -143,17 +38,8 @@ def main():
     proc=CLIPProcessor.from_pretrained(model_name)
     import sys
     query=" ".join(sys.argv[1:]) if len(sys.argv)>1 else "how were the paints of Claude Monet during Post-Impressionism"
-    qpref=any(t in query.lower() for t in ["impression","impressionismo","impressionista","impressionistas","monet","post-impression"])
-    mask=np.ones(len(meta),bool)
-    if qpref and style_col:
-        styles=np.array([m.get("style","") for m in meta],dtype=object)
-        sel=np.array([s.lower().startswith("impression") or "post-impression" in s.lower() for s in styles])
-        if sel.any(): mask=sel
-    elif qpref:
-        caps=np.array([m.get("caption","") for m in meta],dtype=object)
-        sel=np.array(["impression" in str(c).lower() or "post-impression" in str(c).lower() or "monet" in str(c).lower() for c in caps])
-        if sel.any(): mask=sel
-    feats_m=feats[mask]; idxs=np.arange(len(meta))[mask]
+    idxs=np.arange(len(meta))
+    feats_m=feats
     with torch.no_grad():
         enc=proc(text=[query],return_tensors="pt").to(device)
         qf=model.get_text_features(**enc)
@@ -172,88 +58,8 @@ def main():
         m=meta[int(i)]
         print(f"{r}\t{sims[order[r-1]]:.4f}\t{p}\t{m.get('style','')}\t{m.get('caption','')[:140]}")
 
-if __name__=="__main__": main()
-PY
-
-cat > src/build_index_multi.py << 'PY'
-import json, os
-from datasets import load_dataset
-import torch, numpy as np
-from transformers import CLIPModel, CLIPProcessor
-from PIL import Image
-from tqdm import tqdm
-
-def try_load_dataset(name, target_split):
-    candidates=[target_split,"validation","val","dev","valid","test","train"]
-    seen=set()
-    for s in candidates:
-        if s in seen: continue
-        seen.add(s)
-        try:
-            ds=load_dataset(name,split=s)
-            return ds,s
-        except Exception:
-            pass
-    raise RuntimeError("no available split found")
-
-def ensure_meta(cfg):
-    ds, used_split = try_load_dataset(cfg["dataset_name"], cfg["dataset_split"])
-    img_col=cfg["image_column"]
-    txt_col=cfg["text_column"]
-    style_candidates=cfg["style_columns_try"]
-    root=cfg["index_root"]
-    os.makedirs(root,exist_ok=True)
-    meta_path=os.path.join(root,"meta.jsonl")
-    info_path=os.path.join(root,"index_info.json")
-    if os.path.isfile(meta_path) and os.path.isfile(info_path):
-        info=json.load(open(info_path))
-        if info.get("used_split")==used_split:
-            return ds, info, [json.loads(x) for x in open(meta_path,encoding="utf-8")]
-    style_col=None
-    for c in style_candidates:
-        if c in ds.column_names:
-            style_col=c
-            break
-    meta=[]
-    for i in tqdm(range(len(ds))):
-        row=ds[i]
-        meta.append({"idx":i,"caption":str(row.get(txt_col,"")), "style":str(row.get(style_col,"") if style_col else "")})
-    with open(meta_path,"w",encoding="utf-8") as f:
-        for m in meta: f.write(json.dumps(m,ensure_ascii=False)+"\n")
-    info={"dataset_name":cfg["dataset_name"],"requested_split":cfg["dataset_split"],"used_split":used_split,"image_column":img_col,"text_column":txt_col,"style_column":style_col,"size":len(meta)}
-    with open(info_path,"w") as f: json.dump(info,f)
-    return ds, info, meta
-
-def build_for_model(ds, cfg, model_id, name):
-    img_col=cfg["image_column"]
-    bsz=int(cfg["batch_size"])
-    root=cfg["index_root"]
-    outdir=os.path.join(root,name)
-    os.makedirs(outdir,exist_ok=True)
-    device="cuda" if torch.cuda.is_available() else "cpu"
-    model=CLIPModel.from_pretrained(model_id).to(device).eval()
-    proc=CLIPProcessor.from_pretrained(model_id)
-    feats=[]
-    for i in tqdm(range(0,len(ds),bsz)):
-        batch=ds.select(range(i,min(i+bsz,len(ds))))
-        imgs=[x[img_col] for x in batch]
-        imgs=[im if isinstance(im,Image.Image) else Image.open(im) for im in imgs]
-        with torch.no_grad():
-            enc=proc(images=imgs,return_tensors="pt",padding=True).to(device)
-            vf=model.get_image_features(**enc)
-            vf=torch.nn.functional.normalize(vf,dim=-1)
-        feats.append(vf.cpu().numpy())
-    feats=np.concatenate(feats,axis=0)
-    np.save(os.path.join(outdir,"image_embeds.npy"),feats)
-    with open(os.path.join(outdir,"model_id.txt"),"w") as f: f.write(model_id)
-
-def main():
-    cfg=json.load(open("config_multi.json"))
-    ds, info, meta=ensure_meta(cfg)
-    for m in cfg["models"]:
-        build_for_model(ds, cfg, m["id"], m["name"])
-
-if __name__=="__main__": main()
+if __name__=="__main__":
+    main()
 PY
 
 cat > src/query_compare.py << 'PY'
@@ -279,18 +85,8 @@ def run_model(query, cfg, info, meta, ds, model_id, name):
     top_k=int(cfg["top_k"])
     root=cfg["index_root"]
     feats=np.load(os.path.join(root,name,"image_embeds.npy"))
-    style_col=info.get("style_column")
-    qpref=any(t in query.lower() for t in ["impression","impressionismo","impressionista","impressionistas","monet","post-impression"])
-    mask=np.ones(len(meta),bool)
-    if qpref and style_col:
-        styles=np.array([m.get("style","") for m in meta],dtype=object)
-        sel=np.array([s.lower().startswith("impression") or "post-impression" in s.lower() for s in styles])
-        if sel.any(): mask=sel
-    elif qpref:
-        caps=np.array([m.get("caption","") for m in meta],dtype=object)
-        sel=np.array(["impression" in str(c).lower() or "post-impression" in str(c).lower() or "monet" in str(c).lower() for c in caps])
-        if sel.any(): mask=sel
-    feats_m=feats[mask]; idxs=np.arange(len(meta))[mask]
+    idxs=np.arange(len(meta))
+    feats_m=feats
     device="cuda" if torch.cuda.is_available() else "cpu"
     model=CLIPModel.from_pretrained(model_id).to(device).eval()
     proc=CLIPProcessor.from_pretrained(model_id)
@@ -339,8 +135,5 @@ if __name__=="__main__":
     main()
 PY
 
-python -m src.build_index_multi
 python -m src.query_compare "how were the paints of Claude Monet during Post-Impressionism"
-
-python -m src.build_index
 python -m src.query_retrieve "how were the paints of Claude Monet during Post-Impressionism"
