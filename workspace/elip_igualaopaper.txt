@@ -974,3 +974,86 @@ Onde, como e por que alterei
 1. Substituí o eval_split para COCO em inglês, alinhando com a avaliação do paper.
 2. Fixei max_train_examples e hardmine_subset em 6.000.000, reproduzindo o subset usado no paper para ELIP-C.
 3. Mantive batch_size 40, LR 1e-3 e os valores de top-k no re-ranking iguais aos reportados.
+
+
+-----------
+SE DER ERRO DE PYTORCH
+Pelo log, é ambiente novo com PyTorch e torchvision desencontrados. O erro do torchvision nms e o import do CLIPModel somem assim que a pilha Torch estiver pareada. Segue um passo a passo direto para corrigir e rodar de novo.
+
+1. Ver o estado atual
+
+```bash
+python - <<'PY'
+import sys, torch
+print("python:", sys.version)
+print("torch:", getattr(torch, "__version__", None))
+print("cuda.is_available:", torch.cuda.is_available())
+print("torch.version.cuda:", getattr(torch.version, "cuda", None))
+try:
+    import torchvision
+    print("torchvision:", torchvision.__version__)
+except Exception as e:
+    print("torchvision: ERRO ->", repr(e))
+PY
+```
+
+2. Atualizar a pilha Torch pareada e deps de visão
+   Tenta cu124; se não houver CUDA 12.4 no container, cai para cu121 automaticamente.
+
+```bash
+pip install -U --no-cache-dir pip setuptools wheel
+
+pip uninstall -y torchvision torch torchaudio || true
+
+pip install -U --no-cache-dir "transformers>=4.46.3" "huggingface_hub>=0.25.2" "safetensors>=0.4.5" pillow faiss-cpu
+
+pip install -U --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 \
+  torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+  || pip install -U --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+  torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
+```
+
+3. Conferir se ficou pareado
+
+```bash
+python - <<'PY'
+import torch, torchvision
+print("torch:", torch.__version__)
+print("torchvision:", torchvision.__version__)
+print("cuda.is_available:", torch.cuda.is_available())
+PY
+```
+
+4. Rodar treino e inferência novamente
+   Use a variável nova para o allocator.
+
+```bash
+export PYTHONPATH=/workspace/elip_igualpaper:$PYTHONPATH
+export ELIP_CFG=/workspace/elip_igualpaper/configs/test_cc3m.yaml
+export TOKENIZERS_PARALLELISM=false
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+
+python -m elip_igualpaper.training.train_prompted_clip
+python -m elip_igualpaper.infer.infer_rerank_prompted_clip
+```
+
+5. Fazer o push para o Hub
+   Se você já fez login com sucesso nesta máquina, o script atualizado funciona lendo o token salvo. Se preferir, exporte manualmente o token.
+
+```bash
+hf auth login
+export HF_REPO_ID=seu-usuario/elip-c-mapper
+export PYTHONPATH=/workspace/elip_igualpaper:$PYTHONPATH
+export ELIP_CFG=/workspace/elip_igualpaper/configs/test_cc3m.yaml
+python -m elip_igualpaper.scripts.push_to_hf
+```
+
+ou, forçando o token:
+
+```bash
+export HF_TOKEN=SEU_TOKEN_AQUI
+export HF_REPO_ID=seu-usuario/elip-c-mapper
+python -m elip_igualpaper.scripts.push_to_hf
+```
+
+Se ainda aparecer qualquer erro, manda o stdout desses quatro pontos: versão do torch/torchvision, o comando de instalação, o início do treino e o push. Eu ajusto na hora.
