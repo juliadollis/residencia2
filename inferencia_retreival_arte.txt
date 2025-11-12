@@ -137,3 +137,20 @@ PY
 
 python -m src.query_compare "how were the paints of Claude Monet during Post-Impressionism"
 python -m src.query_retrieve "how were the paints of Claude Monet during Post-Impressionism"
+
+
+
+PARA ALTERAR O NOME DO MODELO ALTERE EM
+nano /workspace/aplicacao/rag/config_multi.json
+
+
+"models": [
+  {"id": "openai/clip-vit-base-patch32", "name": "clip_base"},
+  {"id": "turing552/clip-wikiart-raw-v1-10ep", "name": "clip_wikiart_raw"}
+],
+
+
+cd /workspace/aplicacao/rag
+source .venv/bin/activate
+python -m src.build_index_multi
+python -m src.query_compare "how were the paints of Claude Monet during Post-Impressionism"
