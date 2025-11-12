@@ -1,0 +1,37 @@
+model_name: openai/clip-vit-base-patch32
+img_size: 224
+prompt_tokens: 12
+seed: 3407
+output_root: /workspace/elip_novo_11/out
+
+train_dataset_name: laicsiifes/coco-captions-pt-br
+train_dataset_split: train
+val_dataset_name: laicsiifes/coco-captions-pt-br
+val_dataset_split: validation
+
+image_column: image
+caption_column: auto
+caption_is_list: null
+
+batch_size: 64
+num_workers: 4
+epochs: 2
+lr: 5.0e-5
+weight_decay: 0.01
+grad_accum_steps: 1
+fp16: true
+
+hard_mining: true
+hard_topn: 63
+hard_rebuild_every_epochs: 1
+hm_subset: 30000
+img_bs_hm: 64
+txt_bs_hm: 256
+
+k_base: 100
+k_eval: 50
+save_every: 1
+max_train_examples: 30000
+max_val_examples: 4000
+
+grad_clip_norm: 1.0
